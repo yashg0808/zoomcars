@@ -245,7 +245,7 @@ async def refresh_car_schedules():
                 SELECT DISTINCT car_id
                 FROM bookings
                 WHERE created_at > NOW() - INTERVAL '24 hours'
-                AND status IN ('CONFIRMED', 'PENDING')
+                AND status = 'CONFIRMED'
                 LIMIT 100
             """))
             
@@ -253,7 +253,7 @@ async def refresh_car_schedules():
             refreshed_count = 0
             
             for car_id in car_ids:
-                # Get schedule from database
+                # Get schedule from database (only CONFIRMED bookings)
                 schedule_result = await db.execute(text("""
                     SELECT 
                         lower(total_period) as period_start,
@@ -261,7 +261,7 @@ async def refresh_car_schedules():
                         status
                     FROM bookings
                     WHERE car_id = :car_id
-                    AND status IN ('CONFIRMED', 'PENDING')
+                    AND status = 'CONFIRMED'
                     AND upper(total_period) > NOW()
                     ORDER BY lower(total_period) ASC
                 """), {"car_id": car_id})

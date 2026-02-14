@@ -126,16 +126,51 @@ class CacheManager:
     
     # === Car Schedule Management ===
     
+    def _filter_expired_bookings(self, schedule: list) -> list:
+        """
+        Filter out bookings where end time has already passed.
+        This prevents schedule cache from accumulating stale entries.
+        """
+        from datetime import datetime, timezone
+        
+        now = datetime.now(timezone.utc)
+        valid = []
+        for booking in schedule:
+            try:
+                end_time = datetime.fromisoformat(booking["end"])
+                # Make timezone-aware if needed
+                if end_time.tzinfo is None:
+                    end_time = end_time.replace(tzinfo=timezone.utc)
+                if end_time > now:
+                    valid.append(booking)
+            except (KeyError, ValueError):
+                # Skip malformed entries
+                continue
+        return valid
+    
     async def get_car_schedule(self, car_id: int) -> Optional[list]:
-        """Get cached car schedule"""
+        """
+        Get cached car schedule, filtering out expired bookings.
+        
+        Note: Expired entries are lazily cleaned on next write,
+        or when TTL expires (1 hour).
+        """
         key = self.CAR_SCHEDULE_KEY.format(car_id=car_id)
         data = await self.client.get(key)
-        return json.loads(data) if data else None
+        if not data:
+            return None
+        
+        schedule = json.loads(data)
+        return self._filter_expired_bookings(schedule)
     
     async def set_car_schedule(self, car_id: int, schedule: list) -> None:
-        """Cache car schedule"""
+        """
+        Cache car schedule after filtering out expired bookings.
+        This keeps the cache clean and prevents unbounded growth.
+        """
         key = self.CAR_SCHEDULE_KEY.format(car_id=car_id)
-        await self.client.setex(key, self.TTL_CAR_SCHEDULE, json.dumps(schedule))
+        cleaned = self._filter_expired_bookings(schedule)
+        await self.client.setex(key, self.TTL_CAR_SCHEDULE, json.dumps(cleaned))
     
     async def check_availability_from_cache(
         self, car_id: int, start_time: str, end_time_with_buffer: str
@@ -162,7 +197,9 @@ class CacheManager:
         
         # Check for overlaps with existing bookings
         for booking in schedule:
-            if booking.get("status") not in ("CONFIRMED", "PENDING"):
+            # Only CONFIRMED bookings block availability
+            # (PENDING bookings are handled via Redis holds, not DB/cache)
+            if booking.get("status") != "CONFIRMED":
                 continue
             
             existing_start = datetime.fromisoformat(booking["start"])
@@ -181,27 +218,48 @@ class CacheManager:
     
     async def add_booking_to_schedule(self, car_id: int, booking_start: str, booking_end: str, status: str = "CONFIRMED") -> None:
         """
-        Add a new booking to the cached schedule instead of invalidating.
-        This prevents cache misses during high traffic.
+        Add a new booking to the cached schedule using atomic Lua script.
+        
+        IMPORTANT: Only appends if cache already exists.
+        If cache is cold, we DO NOT create a partial cache - 
+        the next read will populate the full schedule from DB.
+        
+        Uses Lua script for atomic read-modify-write to prevent race conditions
+        where cache could be overwritten by stale data.
         """
         key = self.CAR_SCHEDULE_KEY.format(car_id=car_id)
         
-        # Get existing schedule or start fresh
-        data = await self.client.get(key)
-        schedule = json.loads(data) if data else []
+        # Lua script for atomic append (only if key exists)
+        # Returns: 1 if updated, 0 if key didn't exist
+        lua_script = """
+        local current = redis.call('GET', KEYS[1])
+        if not current then
+            return 0
+        end
+        local schedule = cjson.decode(current)
+        local new_booking = cjson.decode(ARGV[1])
+        table.insert(schedule, new_booking)
+        redis.call('SETEX', KEYS[1], ARGV[2], cjson.encode(schedule))
+        return 1
+        """
         
-        # Add new booking
-        schedule.append({
+        new_booking = json.dumps({
             "start": booking_start,
             "end": booking_end,
             "status": status
         })
         
-        # Sort by start time
-        schedule.sort(key=lambda x: x["start"])
+        result = await self.client.eval(
+            lua_script,
+            1,  # number of keys
+            key,  # KEYS[1]
+            new_booking,  # ARGV[1]
+            str(self.TTL_CAR_SCHEDULE)  # ARGV[2]
+        )
         
-        # Update cache
-        await self.client.setex(key, self.TTL_CAR_SCHEDULE, json.dumps(schedule))
+        if result == 0:
+            # Cache was cold - that's fine, next read will populate from DB
+            pass
     
     # === Idempotency ===
     
@@ -295,6 +353,32 @@ class CacheManager:
                 pipe.setex(key, self.TTL_LOCATION_CARS, json.dumps(cars))
             await pipe.execute()
     
+    # === Cache Invalidation ===
+    # Call these when data changes to ensure cache consistency
+    
+    async def invalidate_city_locations(self, city: str) -> None:
+        """
+        Invalidate locations cache for a city.
+        Call when: location added, removed, or deactivated in a city.
+        """
+        key = self.CITY_LOCATIONS_KEY.format(city=city.lower())
+        await self.client.delete(key)
+    
+    async def invalidate_location_cars(self, location_id: int) -> None:
+        """
+        Invalidate cars cache for a location.
+        Call when: car added, removed, moved, or deactivated at a location.
+        """
+        key = self.LOCATION_CARS_KEY.format(location_id=location_id)
+        await self.client.delete(key)
+    
+    async def invalidate_all_cities(self) -> None:
+        """
+        Invalidate the cities list cache.
+        Call when: new city added or city removed from service.
+        """
+        await self.client.delete(self.CITIES_KEY)
+
     # === Hold Management (Redis-only reservation system) ===
     
     async def create_hold(
@@ -416,7 +500,8 @@ class CacheManager:
         
         if schedule:
             for booking in schedule:
-                if booking.get("status") not in ("CONFIRMED",):
+                # Only CONFIRMED bookings block availability
+                if booking.get("status") != "CONFIRMED":
                     continue
                 
                 existing_start = datetime.fromisoformat(booking["start"])
@@ -485,7 +570,10 @@ class CacheManager:
         Batch get schedules for multiple cars.
         Uses MGET for efficiency.
         
-        Returns: {car_id: schedule_list or None if cache miss}
+        Returns: {car_id: schedule_list (filtered) or None if cache miss}
+        
+        Note: Filters expired bookings on read for consistency
+        with get_car_schedule().
         """
         if not car_ids:
             return {}
@@ -495,7 +583,11 @@ class CacheManager:
         
         result = {}
         for car_id, data in zip(car_ids, cached_data):
-            result[car_id] = json.loads(data) if data else None
+            if data:
+                schedule = json.loads(data)
+                result[car_id] = self._filter_expired_bookings(schedule)
+            else:
+                result[car_id] = None
         
         return result
     
@@ -503,6 +595,9 @@ class CacheManager:
         """
         Batch set schedules for multiple cars.
         Uses pipeline for efficiency.
+        
+        Note: This is called after DB fetch which already filters
+        by upper(total_period) > NOW(), but we still clean for safety.
         """
         if not schedules:
             return
@@ -510,7 +605,8 @@ class CacheManager:
         async with self.client.pipeline(transaction=False) as pipe:
             for car_id, schedule in schedules.items():
                 key = self.CAR_SCHEDULE_KEY.format(car_id=car_id)
-                pipe.setex(key, self.TTL_CAR_SCHEDULE, json.dumps(schedule))
+                cleaned = self._filter_expired_bookings(schedule)
+                pipe.setex(key, self.TTL_CAR_SCHEDULE, json.dumps(cleaned))
             await pipe.execute()
     
     async def check_holds_for_cars_batch(
