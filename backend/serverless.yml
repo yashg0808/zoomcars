@@ -1,0 +1,176 @@
+service: zoomcar-backend
+
+frameworkVersion: "3"
+
+provider:
+  name: aws
+  runtime: python3.11
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'ap-south-1'}
+  memorySize: 1024
+  timeout: 29
+  logRetentionInDays: 14
+
+  environment:
+    ENVIRONMENT: ${self:provider.stage}
+    DATABASE_URL: ${ssm:/zoomcar/${self:provider.stage}/database_url}
+    REDIS_URL: ${ssm:/zoomcar/${self:provider.stage}/redis_url}
+    JWT_SECRET_KEY: ${ssm:/zoomcar/${self:provider.stage}/jwt_secret}
+    RAZORPAY_KEY_ID: ${ssm:/zoomcar/${self:provider.stage}/razorpay_key_id}
+    RAZORPAY_KEY_SECRET: ${ssm:/zoomcar/${self:provider.stage}/razorpay_key_secret}
+    RAZORPAY_WEBHOOK_SECRET: ${ssm:/zoomcar/${self:provider.stage}/razorpay_webhook_secret}
+    SENTRY_DSN: ${ssm:/zoomcar/${self:provider.stage}/sentry_dsn, ''}
+    CORS_ORIGINS: ${ssm:/zoomcar/${self:provider.stage}/cors_origins, '*'}
+
+  vpc:
+    securityGroupIds:
+      - ${ssm:/zoomcar/${self:provider.stage}/security_group_id}
+    subnetIds:
+      - ${ssm:/zoomcar/${self:provider.stage}/subnet_id_1}
+      - ${ssm:/zoomcar/${self:provider.stage}/subnet_id_2}
+
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - ssm:GetParameter
+            - ssm:GetParameters
+          Resource:
+            - arn:aws:ssm:${self:provider.region}:*:parameter/zoomcar/${self:provider.stage}/*
+
+plugins:
+  - serverless-python-requirements
+
+custom:
+  pythonRequirements:
+    dockerizePip: true
+    slim: true
+    strip: false
+    layer: true
+    useStaticCache: true
+    useDownloadCache: true
+    invalidateCaches: true
+
+package:
+  individually: true
+  patterns:
+    - "!.venv/**"
+    - "!node_modules/**"
+    - "!tests/**"
+    - "!__pycache__/**"
+    - "!.pytest_cache/**"
+    - "!*.pyc"
+    - "!.env*"
+    - "!README.md"
+
+functions:
+  api:
+    handler: lambda_handler.api_handler
+    description: Main API handler
+    events:
+      - http:
+          path: /{proxy+}
+          method: any
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+              - X-Request-ID
+              - X-Idempotency-Key
+            allowCredentials: true
+      - http:
+          path: /
+          method: any
+          cors: true
+    layers:
+      - Ref: PythonRequirementsLambdaLayer
+    package:
+      patterns:
+        - "app/**"
+        - "lambda_handler.py"
+    provisionedConcurrency: ${self:custom.provisionedConcurrency.${self:provider.stage}, 0}
+
+  cleanupExpiredBookings:
+    handler: lambda_handler.cleanup_handler
+    description: Cleanup expired bookings (runs every minute)
+    memorySize: 512
+    timeout: 60
+    events:
+      - schedule:
+          rate: rate(1 minute)
+          enabled: true
+    layers:
+      - Ref: PythonRequirementsLambdaLayer
+    package:
+      patterns:
+        - "app/**"
+        - "lambda_handler.py"
+
+  cleanupStaleHolds:
+    handler: lambda_handler.stale_holds_cleanup_handler
+    description: Cleanup stale hold references in Redis (runs every 2 minutes)
+    memorySize: 256
+    timeout: 60
+    events:
+      - schedule:
+          rate: rate(2 minutes)
+          enabled: true
+    layers:
+      - Ref: PythonRequirementsLambdaLayer
+    package:
+      patterns:
+        - "app/**"
+        - "lambda_handler.py"
+
+  reconcilePendingPayments:
+    handler: lambda_handler.reconcile_handler
+    description: Reconcile pending payments (runs every 10 minutes)
+    memorySize: 512
+    timeout: 300
+    events:
+      - schedule:
+          rate: rate(10 minutes)
+          enabled: true
+    layers:
+      - Ref: PythonRequirementsLambdaLayer
+    package:
+      patterns:
+        - "app/**"
+        - "lambda_handler.py"
+
+  refreshCarSchedules:
+    handler: lambda_handler.refresh_cache_handler
+    description: Refresh car schedule caches (runs every 5 minutes)
+    memorySize: 512
+    timeout: 120
+    events:
+      - schedule:
+          rate: rate(5 minutes)
+          enabled: true
+    layers:
+      - Ref: PythonRequirementsLambdaLayer
+    package:
+      patterns:
+        - "app/**"
+        - "lambda_handler.py"
+
+resources:
+  Outputs:
+    ApiGatewayRestApiId:
+      Value:
+        Ref: ApiGatewayRestApi
+      Export:
+        Name: ${self:service}-${self:provider.stage}-ApiGatewayRestApiId
+
+    ApiGatewayRootResourceId:
+      Value:
+        Fn::GetAtt:
+          - ApiGatewayRestApi
+          - RootResourceId
+      Export:
+        Name: ${self:service}-${self:provider.stage}-ApiGatewayRootResourceId
