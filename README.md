@@ -241,7 +241,6 @@ Redis serves as both a **cache layer** and **distributed state store** for the a
 │  cars:location:{location_id}    → [cars...]            TTL: 1 hour          │
 │  car:schedule:{car_id}          → [bookings...]        TTL: 1 hour          │
 │                                   (expired entries auto-filtered)            │
-│  config:cities                  → [city_names...]      TTL: 24 hours        │
 │                                                                              │
 │  BOOKING HOLDS (Distributed State)                                          │
 │  ─────────────────────────────────                                          │
