@@ -150,7 +150,7 @@ async def search_cars(
     locations = await cache.get_city_locations(city_normalized)
     
     if locations is None:
-        # Cache miss - fetch from DB and populate
+        # Cache miss (~1%) - 24h TTL, locations rarely change
         location_query = text("""
             SELECT 
                 id, name, 
@@ -218,7 +218,7 @@ async def search_cars(
                 car["_location_id"] = loc_id  # Track location for distance
             all_cars.extend(cars_data)
     
-    # DB fallback for location cache misses
+    # DB fallback for location cache misses (~5-10%) - 1h TTL per location
     if cache_miss_location_ids:
         cars_query = text("""
             SELECT 
@@ -305,7 +305,7 @@ async def search_cars(
             if is_available:
                 available_car_ids.append(car_id)
     
-    # DB fallback for schedule cache misses
+    # DB fallback for schedule cache misses (~10-20%) - 1h TTL, depends on car popularity
     if schedule_cache_miss_ids:
         schedule_query = text("""
             SELECT 
