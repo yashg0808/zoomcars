@@ -94,7 +94,7 @@ ZoomCars is a self-drive car rental platform designed for high availability and 
                         ┌───────────────────────────────┐
                         │     External Services         │
                         │  - Twilio (WhatsApp OTP)      │
-                        │  - Razorpay (Payments)        │
+                        │                               │
                         └───────────────────────────────┘
 ```
 
