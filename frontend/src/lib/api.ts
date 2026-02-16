@@ -108,6 +108,12 @@ export const bookingsApi = {
 
   confirmBooking: (data: ConfirmBookingRequest) =>
     api.post<ConfirmBookingResponse>("/bookings/confirm", data),
+
+  cancelHold: (booking_id: string, car_id: number) =>
+    api.post<{ booking_id: string; message: string }>("/bookings/cancel", {
+      booking_id,
+      car_id,
+    }),
 };
 
 // Types

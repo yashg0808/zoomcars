@@ -106,6 +106,35 @@ function BookingContent() {
     };
   }, [holdData?.expires_at, step]);
 
+  // Cleanup hold on page unload (tab close, navigation away)
+  useEffect(() => {
+    if (!holdData || step !== "otp") {
+      return;
+    }
+
+    const handleBeforeUnload = () => {
+      // Use sendBeacon for reliable cleanup on page unload
+      // This works even when the page is closing
+      if (holdData) {
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+        const payload = JSON.stringify({
+          booking_id: holdData.booking_id,
+          car_id: carId,
+        });
+        navigator.sendBeacon(
+          `${apiUrl}/api/v1/bookings/cancel`,
+          new Blob([payload], { type: "application/json" })
+        );
+      }
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, [holdData, step, carId]);
+
   // Fetch car details
   const { data: car, isLoading: isLoadingCar } = useQuery({
     queryKey: ["car", carId],
@@ -147,6 +176,30 @@ function BookingContent() {
     },
     onError: (err: any) => {
       setError(err.response?.data?.detail || "Failed to send OTP");
+    },
+  });
+
+  // Cancel hold mutation
+  const cancelMutation = useMutation({
+    mutationFn: async () => {
+      if (!holdData) {
+        throw new Error("No active booking hold");
+      }
+      await bookingsApi.cancelHold(holdData.booking_id, carId);
+    },
+    onSuccess: () => {
+      setHoldData(null);
+      setBookingPreview(null);
+      setOtp("");
+      setStep("details");
+    },
+    onError: (err: any) => {
+      // Even if cancel fails, go back to details
+      console.error("Failed to cancel hold:", err);
+      setHoldData(null);
+      setBookingPreview(null);
+      setOtp("");
+      setStep("details");
     },
   });
 
@@ -479,10 +532,18 @@ function BookingContent() {
                   <div className="flex space-x-3">
                     <button
                       type="button"
-                      onClick={() => setStep("details")}
-                      className="flex-1 py-3 border border-gray-300 rounded-lg font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
+                      onClick={() => cancelMutation.mutate()}
+                      disabled={cancelMutation.isPending}
+                      className="flex-1 py-3 border border-gray-300 rounded-lg font-semibold text-gray-700 hover:bg-gray-50 transition-colors disabled:opacity-50"
                     >
-                      Back
+                      {cancelMutation.isPending ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin inline mr-2" />
+                          Cancelling...
+                        </>
+                      ) : (
+                        "Cancel & Go Back"
+                      )}
                     </button>
                     <button
                       type="submit"
