@@ -275,8 +275,11 @@ async def refresh_car_schedules():
                     })
                 
                 # Update cache
-                await cache.set_car_schedule(car_id, schedule)
-                refreshed_count += 1
+                try:
+                    await cache.set_car_schedule(car_id, schedule)
+                    refreshed_count += 1
+                except Exception:
+                    logger.warning(f"Failed to cache schedule for car: {car_id}", exc_info=True)
             
             logger.info(f"Refreshed schedules for {refreshed_count} cars")
             return {"refreshed_count": refreshed_count}

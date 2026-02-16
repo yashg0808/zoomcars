@@ -452,12 +452,15 @@ async def confirm_booking(
     await cache.delete_otp(phone)
     
     # Update schedule cache (write-through)
-    await cache.add_booking_to_schedule(
-        car_id=car_id,
-        booking_start=start_time.isoformat(),
-        booking_end=end_time_with_buffer.isoformat(),
-        status="CONFIRMED"
-    )
+    try:
+        await cache.add_booking_to_schedule(
+            car_id=car_id,
+            booking_start=start_time.isoformat(),
+            booking_end=end_time_with_buffer.isoformat(),
+            status="CONFIRMED"
+        )
+    except Exception:
+        logger.warning(f"Failed to update schedule cache for car: {car_id}", exc_info=True)
     
     logger.info(f"Booking confirmed: {booking_id} for car {car_id}")
     

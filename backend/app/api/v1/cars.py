@@ -178,8 +178,11 @@ async def search_cars(
         ]
         
         # Write-through: cache locations
-        await cache.set_city_locations(city_normalized, locations)
-        logger.debug(f"Cache miss: Populated {len(locations)} locations for {city_normalized}")
+        try:
+            await cache.set_city_locations(city_normalized, locations)
+            logger.debug(f"Cache miss: Populated {len(locations)} locations for {city_normalized}")
+        except Exception:
+            logger.warning(f"Failed to cache locations for city: {city_normalized}", exc_info=True)
     
     # ═══════════════════════════════════════════════════════════════════════
     # Step 3: Filter locations within radius (Haversine in Python)
@@ -204,6 +207,8 @@ async def search_cars(
     # ═══════════════════════════════════════════════════════════════════════
     # Step 4: Get cars for nearby locations (cache-first, batch)
     # ═══════════════════════════════════════════════════════════════════════
+
+    # Batch get cars for all nearby locations (1h TTL)
     location_cars_cache = await cache.get_location_cars_batch(nearby_location_ids)
     
     all_cars = []
@@ -253,8 +258,11 @@ async def search_cars(
             all_cars.append(car_data)
         
         # Write-through: cache cars per location
-        await cache.set_location_cars_batch(cars_by_location)
-        logger.debug(f"Cache miss: Populated cars for {len(cache_miss_location_ids)} locations")
+        try:
+            await cache.set_location_cars_batch(cars_by_location)
+            logger.debug(f"Cache miss: Populated cars for {len(cache_miss_location_ids)} locations")
+        except Exception:
+            logger.warning("Failed to cache location cars batch", exc_info=True)
     
     if not all_cars:
         return CarSearchResponse(cars=[], total_count=0)
@@ -305,7 +313,7 @@ async def search_cars(
             if is_available:
                 available_car_ids.append(car_id)
     
-    # DB fallback for schedule cache misses (~10-20%) - 1h TTL, depends on car popularity
+    # DB fallback for schedule cache misses (~10-20%) - 1h TTL, depends on location popularity
     if schedule_cache_miss_ids:
         schedule_query = text("""
             SELECT 
@@ -335,7 +343,11 @@ async def search_cars(
             if start_time < row.period_end and end_time_with_buffer > row.period_start:
                 blocked_by_db.add(row.car_id)
         
-        await cache.set_car_schedules_batch(db_schedules)
+        # Write-through: cache schedules for missed cars
+        try:
+            await cache.set_car_schedules_batch(db_schedules)
+        except Exception:
+            logger.warning("Failed to cache car schedules batch", exc_info=True)
         
         for car_id in schedule_cache_miss_ids:
             if car_id not in blocked_by_db:
@@ -455,56 +467,3 @@ async def get_car_details(
             address=car.address
         )
     )
-
-
-@router.get("/{car_id}/availability")
-async def check_car_availability(
-    car_id: int,
-    start_time: datetime = Query(..., description="Pickup time"),
-    end_time: datetime = Query(..., description="Drop-off time"),
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis)
-) -> dict:
-    """
-    Check if a specific car is available for the given time period.
-    Uses cache + holds check first, falls back to DB.
-    """
-    cache = CacheManager(redis_client)
-    end_time_with_buffer = end_time + timedelta(hours=settings.BUFFER_HOURS)
-    start_time_str = start_time.isoformat()
-    end_time_with_buffer_str = end_time_with_buffer.isoformat()
-    
-    # Check cache + holds (fast path)
-    is_available, cache_hit, _ = await cache.check_availability_with_holds(
-        car_id=car_id,
-        start_time=start_time_str,
-        end_time_with_buffer=end_time_with_buffer_str
-    )
-    
-    # If cache miss, verify against DB
-    if not cache_hit and is_available:
-        query = text("""
-            SELECT EXISTS (
-                SELECT 1 
-                FROM bookings
-                WHERE car_id = :car_id
-                AND status = 'CONFIRMED'
-                AND total_period && tstzrange(:start, :end_with_buffer, '[)')
-            ) AS is_unavailable
-        """)
-        
-        result = await db.execute(query, {
-            "car_id": car_id,
-            "start": start_time,
-            "end_with_buffer": end_time_with_buffer
-        })
-        row = result.fetchone()
-        is_available = not row.is_unavailable
-    
-    return {
-        "car_id": car_id,
-        "start_time": start_time.isoformat(),
-        "end_time": end_time.isoformat(),
-        "is_available": is_available,
-        "cache_hit": cache_hit
-    }

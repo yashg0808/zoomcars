@@ -42,7 +42,10 @@ async def get_cities(
     cities = [row[0] for row in result.fetchall()]
     
     # Cache result
-    await cache.set_cities(cities)
+    try:
+        await cache.set_cities(cities)
+    except Exception:
+        logger.warning("Failed to cache cities list", exc_info=True)
     
     return CitiesResponse(cities=cities)
 
@@ -133,7 +136,10 @@ async def get_locations(
                 }
                 for row in rows
             ]
-            await cache.set_city_locations(city_normalized, cache_data)
+            try:
+                await cache.set_city_locations(city_normalized, cache_data)
+            except Exception:
+                logger.warning(f"Failed to cache locations for city: {city_normalized}", exc_info=True)
         
         return [
             LocationResponse(
