@@ -15,6 +15,7 @@
 5. [Search API Deep Dive](#5-search-api-deep-dive)
 6. [Booking API Deep Dive](#6-booking-api-deep-dive)
 7. [Key Design Decisions](#7-key-design-decisions)
+8. [Additional Documentation](#8-additional-documentation)
 
 ---
 
@@ -731,6 +732,16 @@ Most reads use **stale-while-revalidate** pattern - serve cache immediately, ref
 | **No stale entries**          | Expired bookings filtered on read/write               |
 | **Race condition prevention** | Atomic Lua script prevents concurrent overwrites      |
 | **Cold cache safety**         | Returns early if cache doesn't exist, forces DB fetch |
+
+---
+
+## 8. Additional Documentation
+
+For detailed technical documentation, refer to:
+
+- **[Load Analysis & Capacity Planning](docs/LOAD_ANALYSIS.md)** - Memory usage, system limits, scale recommendations
+- **[System Design](docs/SYSTEM_DESIGN.md)** - Deep technical architecture (if available)
+- **[Search Architecture](docs/SEARCH_ARCHITECTURE.md)** - Cache-first search implementation details (if available)
 
 ---
 
