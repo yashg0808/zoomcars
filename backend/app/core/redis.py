@@ -67,7 +67,7 @@ class CacheManager:
     CAR_HOLDS_KEY = "car:holds:{car_id}"  # Set of active hold IDs per car
     
     # City-based caching keys
-    CITY_LOCATIONS_KEY = "locations:city:{city}"  # All locations in a city
+    CITY_LOCATIONS_KEY = "locations:city:{city}"  # All car locations in a city
     LOCATION_CARS_KEY = "cars:location:{location_id}"  # All cars at a location
     
     # TTLs (in seconds)
@@ -79,7 +79,8 @@ class CacheManager:
     TTL_IDEMPOTENCY = 600  # 10 minutes
     TTL_RATE_LIMIT = 60  # 1 minute
     TTL_OTP_RATE_LIMIT = 3600  # 1 hour
-    TTL_HOLD = 300  # 5 minutes for booking hold (aligned with OTP TTL)
+    TTL_HOLD = 600  # 10 minutes for booking data (extended session window)
+    TTL_HOLD_LOCK = 300  # 5 minutes for inventory lock (hard hold on the car)
     TTL_CAR_HOLDS_SET = 3600  # 1 hour for car holds set (auto-cleanup if no activity)
     TTL_CITY_LOCATIONS = 86400  # 24 hours (locations rarely change)
     TTL_LOCATION_CARS = 3600  # 1 hour (car assignments rarely change)
@@ -400,7 +401,9 @@ class CacheManager:
         """
         from datetime import datetime, timezone
         
-        expires_at = datetime.now(timezone.utc) + timedelta(seconds=self.TTL_HOLD)
+        now = datetime.now(timezone.utc)
+        lock_expires_at = now + timedelta(seconds=self.TTL_HOLD_LOCK)
+        expires_at = now + timedelta(seconds=self.TTL_HOLD)
         
         hold_data = {
             "booking_id": booking_id,
@@ -411,7 +414,8 @@ class CacheManager:
             "lock_token": lock_token,
             "total_amount": total_amount,
             "car_details": car_details,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": now.isoformat(),
+            "lock_expires_at": lock_expires_at.isoformat(),
             "expires_at": expires_at.isoformat()
         }
         

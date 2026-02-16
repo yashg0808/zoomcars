@@ -318,6 +318,18 @@ class CancelBookingResponse(BaseModel):
     message: str
 
 
+class CancelHoldRequest(BaseModel):
+    """Cancel a Redis-only hold (no DB interaction)"""
+    booking_id: UUID = Field(..., description="Booking ID from initiate response")
+    car_id: int = Field(..., gt=0, description="Car ID associated with the hold")
+
+
+class CancelHoldResponse(BaseModel):
+    """Response after cancelling a hold"""
+    booking_id: UUID
+    message: str
+
+
 # ============== Webhook Schemas ==============
 
 class RazorpayWebhookPayload(BaseModel):

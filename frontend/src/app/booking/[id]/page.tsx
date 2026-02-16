@@ -78,8 +78,8 @@ function BookingContent() {
       setCountdown(remaining);
 
       if (remaining <= 0) {
-        // Hold expired, go back to details
-        setError("Your hold has expired. Please start over.");
+        // Session expired, go back to details
+        setError("Your session has expired. Please start over.");
         setStep("details");
         setHoldData(null);
         setBookingPreview(null);
@@ -432,8 +432,11 @@ function BookingContent() {
                   <h2 className="font-semibold text-lg mb-4 text-gray-900">
                     Verify OTP
                   </h2>
-                  <p className="text-gray-600 text-sm mb-4">
+                  <p className="text-gray-600 text-sm mb-2">
                     Enter the 6-digit OTP sent to your WhatsApp on {phone}
+                  </p>
+                  <p className="text-xs text-amber-600 mb-4">
+                    Hold expires in 5m (Session valid for 10m)
                   </p>
 
                   <div className="mb-4">
@@ -456,9 +459,9 @@ function BookingContent() {
                   <div className="text-center mb-4">
                     {countdown > 0 ? (
                       <p className="text-sm text-gray-500">
-                        Resend OTP in{" "}
+                        Session expires in{" "}
                         <span className="font-semibold text-zoomcar-green">
-                          {countdown}s
+                          {Math.floor(countdown / 60)}m {countdown % 60}s
                         </span>
                       </p>
                     ) : (

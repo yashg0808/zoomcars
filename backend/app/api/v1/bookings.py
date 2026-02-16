@@ -37,7 +37,8 @@ from app.schemas import (
     ConfirmPaymentRequest, ConfirmPaymentResponse,
     CancelBookingResponse,
     BookingOTPRequest, BookingOTPResponse,
-    ConfirmBookingRequest, ConfirmBookingResponse
+    ConfirmBookingRequest, ConfirmBookingResponse,
+    CancelHoldRequest, CancelHoldResponse
 )
 
 router = APIRouter()
@@ -262,37 +263,45 @@ async def initiate_booking(
         if lock_acquired:
             await lock.release()
     
-    # Generate and store OTP
-    otp = str(random.randint(100000, 999999))
-    await cache.store_otp(request.phone, otp)
-    await cache.increment_otp_rate_limit(request.phone)
-    
-    # Send OTP via Twilio WhatsApp
-    otp_sent = False
-    if settings.TWILIO_ACCOUNT_SID and settings.TWILIO_AUTH_TOKEN:
-        try:
-            twilio_client = TwilioClient(
-                settings.TWILIO_ACCOUNT_SID,
-                settings.TWILIO_AUTH_TOKEN
-            )
-            
-            whatsapp_to = f"whatsapp:{request.phone}" if not request.phone.startswith("whatsapp:") else request.phone
-            
-            message = twilio_client.messages.create(
-                from_=settings.TWILIO_WHATSAPP_FROM,
-                content_sid=settings.TWILIO_CONTENT_SID,
-                content_variables=json.dumps({"1": otp}),
-                to=whatsapp_to
-            )
-            logger.info(f"Twilio message sent: {message.sid}")
-            otp_sent = True
-        except TwilioRestException as e:
-            logger.error(f"Failed to send WhatsApp message: {e}")
-            # Don't fail the booking - user can still see OTP in dev mode
-            otp_sent = False
+    # Generate and store OTP (with demo bypass)
+    if request.phone == "+919999999999":
+        # Demo OTP bypass — skip Twilio entirely
+        otp = "123456"
+        logger.info("Demo OTP bypass used for 9999999999")
+        otp_sent = True
+        await cache.store_otp(request.phone, otp)
+        await cache.increment_otp_rate_limit(request.phone)
     else:
-        logger.info(f"[DEV] Booking OTP for {request.phone}: {otp}")
-        otp_sent = True  # In dev mode, consider it sent
+        otp = str(random.randint(100000, 999999))
+        await cache.store_otp(request.phone, otp)
+        await cache.increment_otp_rate_limit(request.phone)
+        
+        # Send OTP via Twilio WhatsApp
+        otp_sent = False
+        if settings.TWILIO_ACCOUNT_SID and settings.TWILIO_AUTH_TOKEN:
+            try:
+                twilio_client = TwilioClient(
+                    settings.TWILIO_ACCOUNT_SID,
+                    settings.TWILIO_AUTH_TOKEN
+                )
+                
+                whatsapp_to = f"whatsapp:{request.phone}" if not request.phone.startswith("whatsapp:") else request.phone
+                
+                message = twilio_client.messages.create(
+                    from_=settings.TWILIO_WHATSAPP_FROM,
+                    content_sid=settings.TWILIO_CONTENT_SID,
+                    content_variables=json.dumps({"1": otp}),
+                    to=whatsapp_to
+                )
+                logger.info(f"Twilio message sent: {message.sid}")
+                otp_sent = True
+            except TwilioRestException as e:
+                logger.error(f"Failed to send WhatsApp message: {e}")
+                # Don't fail the booking - user can still see OTP in dev mode
+                otp_sent = False
+        else:
+            logger.info(f"[DEV] Booking OTP for {request.phone}: {otp}")
+            otp_sent = True  # In dev mode, consider it sent
     
     expires_at = datetime.fromisoformat(hold_data["expires_at"])
     
@@ -389,6 +398,52 @@ async def confirm_booking(
     start_time = datetime.fromisoformat(car_details["booking_start"])
     end_time = datetime.fromisoformat(car_details["booking_end"])
     end_time_with_buffer = datetime.fromisoformat(hold_data["end"])
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # Step 3b: Lazy Booking — check if inventory lock has expired
+    # If the 5-minute lock window has passed but the 10-minute session is
+    # still alive, re-check availability and re-acquire the hold.
+    # ═══════════════════════════════════════════════════════════════════════
+    lock_expires_at = datetime.fromisoformat(hold_data["lock_expires_at"])
+    now = datetime.now(timezone.utc)
+    # Make lock_expires_at timezone-aware if needed
+    if lock_expires_at.tzinfo is None:
+        lock_expires_at = lock_expires_at.replace(tzinfo=timezone.utc)
+    
+    if now > lock_expires_at:
+        # Inventory lock expired — perform lazy re-check
+        logger.info(f"Lazy booking: lock expired for {booking_id}, re-checking availability")
+        
+        start_time_str = hold_data["start"]
+        end_time_with_buffer_str = hold_data["end"]
+        
+        try:
+            is_available, _, _ = await cache.check_availability_with_holds(
+                car_id=car_id,
+                start_time=start_time_str,
+                end_time_with_buffer=end_time_with_buffer_str
+            )
+        except Exception:
+            logger.warning(f"Cache read failed during lazy re-check for {booking_id}", exc_info=True)
+            # On cache failure, be conservative and fail
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Unable to verify availability. Please start a new booking."
+            )
+        
+        if not is_available:
+            # Car was taken during the grace period
+            await cache.delete_hold(booking_id, car_id)
+            await cache.delete_otp(phone)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Car was booked by someone else during your session. Please try another slot."
+            )
+        
+        # Re-acquire the hold by refreshing the car:holds set membership
+        car_holds_key = f"car:holds:{car_id}"
+        await redis_client.sadd(car_holds_key, booking_id)
+        logger.info(f"Lazy booking: re-acquired hold for {booking_id}")
     
     # ═══════════════════════════════════════════════════════════════════════
     # Step 4: Get or create user
@@ -498,4 +553,28 @@ async def confirm_booking(
         },
         booking_start=start_time,
         booking_end=end_time
+    )
+
+
+@router.post("/cancel", response_model=CancelHoldResponse)
+async def cancel_hold(
+    request: CancelHoldRequest,
+    redis_client: redis.Redis = Depends(get_redis)
+) -> CancelHoldResponse:
+    """
+    Cancel/Release a pending hold (Redis only, no DB interaction).
+    
+    Use this to explicitly release a car if the user decides not to proceed
+    or if the demo bugs out. Removes both the hold data key and the
+    car holds set entry immediately.
+    """
+    cache = CacheManager(redis_client)
+    booking_id = str(request.booking_id)
+    
+    await cache.delete_hold(booking_id, request.car_id)
+    logger.info(f"Hold cancelled: {booking_id} for car {request.car_id}")
+    
+    return CancelHoldResponse(
+        booking_id=request.booking_id,
+        message="Hold released successfully."
     )
