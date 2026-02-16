@@ -41,11 +41,12 @@ class Settings(BaseSettings):
     AWS_ACCESS_KEY_ID: str = Field(default="")
     AWS_SECRET_ACCESS_KEY: str = Field(default="")
     
-    # Twilio (WhatsApp OTP)
+    # Twilio (WhatsApp OTP and Confirmations)
     TWILIO_ACCOUNT_SID: str = Field(default="")
     TWILIO_AUTH_TOKEN: str = Field(default="")
     TWILIO_WHATSAPP_FROM: str = Field(default="whatsapp:+14155238886")
-    TWILIO_CONTENT_SID: str = Field(default="HX229f5a04fd0510ce1b071852155d3e75")
+    TWILIO_CONTENT_SID: str = Field(default="HX229f5a04fd0510ce1b071852155d3e75")  # OTP template
+    TWILIO_BOOKING_CONFIRMATION_TEMPLATE_SID: str = Field(default="")  # Booking confirmation template (optional)
     
     # Sentry
     SENTRY_DSN: str = Field(default="")

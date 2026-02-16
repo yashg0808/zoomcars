@@ -29,6 +29,7 @@ from twilio.base.exceptions import TwilioRestException
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.redis import get_redis, CacheManager
+from app.core.queue import MessageQueue
 from app.core.security import get_current_user_token, TokenPayload
 from app.models import User, Car, Booking, BookingStatus
 from app.schemas import (
@@ -537,6 +538,27 @@ async def confirm_booking(
         )
     except Exception:
         logger.warning(f"Failed to update schedule cache for car: {car_id}", exc_info=True)
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # Step 7: Enqueue async confirmation message (fire-and-forget)
+    # ═══════════════════════════════════════════════════════════════════════
+    try:
+        queue = MessageQueue(redis_client)
+        await queue.enqueue_confirmation(
+            booking_id=booking_id,
+            phone=phone,
+            booking_data={
+                "make": car_details["make"],
+                "model": car_details["model"],
+                "year": car_details["year"],
+                "booking_start": start_time.isoformat(),
+                "booking_end": end_time.isoformat(),
+                "total_amount": total_amount
+            }
+        )
+    except Exception:
+        # Don't fail the booking if queue fails - message just won't be sent
+        logger.error(f"Failed to enqueue confirmation for booking {booking_id}", exc_info=True)
     
     logger.info(f"Booking confirmed: {booking_id} for car {car_id}")
     
