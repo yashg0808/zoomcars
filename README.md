@@ -389,8 +389,9 @@ PostgreSQL exclusion constraint (`no_double_booking`) acts as final safety net i
            │
            ▼
     ┌──────────────┐     Cache Miss?     ┌───────────────┐
-    │ Step 1: Get  │─────────────────────▶│  PostgreSQL   │
-    │  Locations   │     (rare)          │  SELECT from  │
+    │ Step 1: Get  │─────────────────────▶│  PostgreSQL  │
+    │  car         |                      |              |
+    |   Locations  │     (rare)          │  SELECT from  │
     │  for City    │◀────────────────────│  locations    │
     │              │     Write-through   └───────────────┘
     │  Redis Key:  │
