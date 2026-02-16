@@ -82,7 +82,12 @@ async def initiate_booking(
     cache = CacheManager(redis_client)
     
     # Check rate limit
-    is_allowed, current_count = await cache.check_otp_rate_limit(request.phone)
+    try:
+        is_allowed, current_count = await cache.check_otp_rate_limit(request.phone)
+    except Exception:
+        logger.error("Cache read failed for OTP rate limit check, failing open", exc_info=True)
+        is_allowed, current_count = True, 0  # Fail-open on Redis failure
+    
     if not is_allowed:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -130,11 +135,15 @@ async def initiate_booking(
     # FAIL-FAST: Check availability against cache + active holds
     # This avoids waiting for lock if slot is obviously unavailable
     # ═══════════════════════════════════════════════════════════════════════
-    is_available, cache_hit, _ = await cache.check_availability_with_holds(
-        car_id=request.car_id,
-        start_time=start_time_str,
-        end_time_with_buffer=end_time_with_buffer_str
-    )
+    try:
+        is_available, cache_hit, _ = await cache.check_availability_with_holds(
+            car_id=request.car_id,
+            start_time=start_time_str,
+            end_time_with_buffer=end_time_with_buffer_str
+        )
+    except Exception:
+        logger.warning("Cache read failed for availability check, will check DB under lock", exc_info=True)
+        is_available, cache_hit = True, False  # Proceed to lock and check DB
     
     if not is_available:
         raise HTTPException(
@@ -158,11 +167,15 @@ async def initiate_booking(
             )
         
         # Re-check availability after acquiring lock
-        is_available, cache_hit, _ = await cache.check_availability_with_holds(
-            car_id=request.car_id,
-            start_time=start_time_str,
-            end_time_with_buffer=end_time_with_buffer_str
-        )
+        try:
+            is_available, cache_hit, _ = await cache.check_availability_with_holds(
+                car_id=request.car_id,
+                start_time=start_time_str,
+                end_time_with_buffer=end_time_with_buffer_str
+            )
+        except Exception:
+            logger.warning("Cache read failed for availability recheck, will verify from DB", exc_info=True)
+            is_available, cache_hit = True, False  # Will verify against DB below
         
         if not is_available:
             raise HTTPException(
@@ -327,7 +340,11 @@ async def confirm_booking(
     # ═══════════════════════════════════════════════════════════════════════
     # Step 1: Fetch hold from Redis and validate lock_token
     # ═══════════════════════════════════════════════════════════════════════
-    hold_data = await cache.get_hold(booking_id)
+    try:
+        hold_data = await cache.get_hold(booking_id)
+    except Exception:
+        logger.warning(f"Cache read failed for hold: {booking_id}", exc_info=True)
+        hold_data = None
     
     if hold_data is None:
         raise HTTPException(
@@ -345,7 +362,11 @@ async def confirm_booking(
     # Step 2: Verify OTP
     # ═══════════════════════════════════════════════════════════════════════
     phone = hold_data["phone"]
-    stored_otp = await cache.get_otp(phone)
+    try:
+        stored_otp = await cache.get_otp(phone)
+    except Exception:
+        logger.warning(f"Cache read failed for OTP: {phone}", exc_info=True)
+        stored_otp = None
     
     if not stored_otp:
         raise HTTPException(

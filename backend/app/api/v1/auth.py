@@ -40,7 +40,12 @@ async def send_otp(
     cache = CacheManager(redis_client)
     
     # Check rate limit
-    is_allowed, current_count = await cache.check_otp_rate_limit(request.phone)
+    try:
+        is_allowed, current_count = await cache.check_otp_rate_limit(request.phone)
+    except Exception:
+        logger.error("Cache read failed for OTP rate limit check, failing open", exc_info=True)
+        is_allowed, current_count = True, 0  # Fail-open on Redis failure
+    
     if not is_allowed:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -103,7 +108,11 @@ async def verify_otp(
     cache = CacheManager(redis_client)
     
     # Get stored OTP
-    stored_otp = await cache.get_otp(request.phone)
+    try:
+        stored_otp = await cache.get_otp(request.phone)
+    except Exception:
+        logger.warning("Cache read failed for OTP retrieval", exc_info=True)
+        stored_otp = None
     
     if not stored_otp:
         raise HTTPException(

@@ -29,7 +29,12 @@ async def get_cities(
     cache = CacheManager(redis_client)
     
     # Check cache first
-    cached_cities = await cache.get_cities()
+    try:
+        cached_cities = await cache.get_cities()
+    except Exception:
+        logger.warning("Cache read failed for cities list", exc_info=True)
+        cached_cities = None
+    
     if cached_cities:
         return CitiesResponse(cities=cached_cities)
     
@@ -95,7 +100,11 @@ async def get_locations(
     elif city:
         # Cache-first for city-based queries
         city_normalized = city.strip().title()
-        cached_locations = await cache.get_city_locations(city_normalized)
+        try:
+            cached_locations = await cache.get_city_locations(city_normalized)
+        except Exception:
+            logger.warning(f"Cache read failed for city locations: {city_normalized}", exc_info=True)
+            cached_locations = None
         
         if cached_locations:
             return [

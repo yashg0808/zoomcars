@@ -147,7 +147,11 @@ async def search_cars(
     # ═══════════════════════════════════════════════════════════════════════
     # Step 2: Get locations for city (cache-first)
     # ═══════════════════════════════════════════════════════════════════════
-    locations = await cache.get_city_locations(city_normalized)
+    try:
+        locations = await cache.get_city_locations(city_normalized)
+    except Exception:
+        logger.warning(f"Cache read failed for city locations: {city_normalized}", exc_info=True)
+        locations = None
     
     if locations is None:
         # Cache miss (~1%) - 24h TTL, locations rarely change
@@ -209,7 +213,11 @@ async def search_cars(
     # ═══════════════════════════════════════════════════════════════════════
 
     # Batch get cars for all nearby locations (1h TTL)
-    location_cars_cache = await cache.get_location_cars_batch(nearby_location_ids)
+    try:
+        location_cars_cache = await cache.get_location_cars_batch(nearby_location_ids)
+    except Exception:
+        logger.warning("Cache read failed for location cars batch", exc_info=True)
+        location_cars_cache = {}
     
     all_cars = []
     cache_miss_location_ids = []
@@ -290,7 +298,11 @@ async def search_cars(
     # ═══════════════════════════════════════════════════════════════════════
     # Step 6: Check schedule cache for availability
     # ═══════════════════════════════════════════════════════════════════════
-    schedules = await cache.get_car_schedules_batch(car_ids)
+    try:
+        schedules = await cache.get_car_schedules_batch(car_ids)
+    except Exception:
+        logger.warning("Cache read failed for car schedules batch", exc_info=True)
+        schedules = {}
     
     available_car_ids = []
     schedule_cache_miss_ids = []
@@ -357,12 +369,16 @@ async def search_cars(
     # Step 7: Filter by Redis holds
     # ═══════════════════════════════════════════════════════════════════════
     if available_car_ids:
-        blocked_by_holds = await cache.check_holds_for_cars_batch(
-            available_car_ids,
-            start_time_str,
-            end_time_with_buffer_str
-        )
-        available_car_ids = [cid for cid in available_car_ids if cid not in blocked_by_holds]
+        try:
+            blocked_by_holds = await cache.check_holds_for_cars_batch(
+                available_car_ids,
+                start_time_str,
+                end_time_with_buffer_str
+            )
+            available_car_ids = [cid for cid in available_car_ids if cid not in blocked_by_holds]
+        except Exception:
+            logger.warning("Cache read failed for holds check, assuming no holds", exc_info=True)
+            # On Redis failure, assume no holds (fail-open for search)
     
     # ═══════════════════════════════════════════════════════════════════════
     # Step 8: Build response with sorting and pagination
