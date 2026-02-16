@@ -113,13 +113,22 @@ class MessageQueue:
             
             whatsapp_to = f"whatsapp:{phone}" if not phone.startswith("whatsapp:") else phone
             
-            # Format dates nicely
-            from datetime import datetime
+            # Format dates nicely - convert UTC to IST
+            from datetime import datetime, timezone, timedelta
+            ist = timezone(timedelta(hours=5, minutes=30))
+            
             try:
                 start = datetime.fromisoformat(message_data.get("booking_start", ""))
                 end = datetime.fromisoformat(message_data.get("booking_end", ""))
-                start_str = start.strftime("%b %d, %I:%M %p")
-                end_str = end.strftime("%b %d, %I:%M %p")
+                
+                # Convert to IST if datetime is timezone-aware
+                if start.tzinfo is not None:
+                    start = start.astimezone(ist)
+                if end.tzinfo is not None:
+                    end = end.astimezone(ist)
+                
+                start_str = start.strftime("%b %d, %I:%M %p IST")
+                end_str = end.strftime("%b %d, %I:%M %p IST")
             except:
                 start_str = message_data.get("booking_start", "")
                 end_str = message_data.get("booking_end", "")
